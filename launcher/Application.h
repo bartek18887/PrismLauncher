@@ -3,6 +3,7 @@
  *  Prism Launcher - Minecraft Launcher
  *  Copyright (C) 2022 Sefa Eyeoglu <contact@scrumplex.net>
  *  Copyright (C) 2022 Tayou <tayou@gmx.net>
+ *  Copyright (C) 2023 TheKodeToad <TheKodeToad@proton.me>
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -43,7 +44,6 @@
 #include <QIcon>
 #include <QDateTime>
 #include <QUrl>
-#include <updater/GoUpdate.h>
 
 #include <BaseInstance.h>
 
@@ -63,7 +63,7 @@ class AccountList;
 class IconList;
 class QNetworkAccessManager;
 class JavaInstallList;
-class UpdateChecker;
+class ExternalUpdater;
 class BaseProfilerFactory;
 class BaseDetachedToolFactory;
 class TranslationsModel;
@@ -120,13 +120,17 @@ public:
 
     void setIconTheme(const QString& name);
 
+    void applyCurrentlySelectedTheme(bool initial = false);
+
     QList<ITheme*> getValidApplicationThemes();
 
-    void setApplicationTheme(const QString& name, bool initial);
+    void setApplicationTheme(const QString& name);
 
-    shared_qobject_ptr<UpdateChecker> updateChecker() {
-        return m_updateChecker;
+    shared_qobject_ptr<ExternalUpdater> updater() {
+        return m_updater;
     }
+
+    void triggerUpdateCheck();
 
     std::shared_ptr<TranslationsModel> translations();
 
@@ -174,6 +178,7 @@ public:
 
     QString getMSAClientID();
     QString getFlameAPIKey();
+    QString getModrinthAPIToken();
     QString getUserAgent();
     QString getUserAgentUncached();
 
@@ -206,6 +211,7 @@ signals:
     void updateAllowedChanged(bool status);
     void globalSettingsAboutToOpen();
     void globalSettingsClosed();
+    int currentCatChanged(int index);
 
 #ifdef Q_OS_MACOS
     void clickedOnDock();
@@ -248,7 +254,7 @@ private:
 
     shared_qobject_ptr<QNetworkAccessManager> m_network;
 
-    shared_qobject_ptr<UpdateChecker> m_updateChecker;
+    shared_qobject_ptr<ExternalUpdater> m_updater;
     shared_qobject_ptr<AccountList> m_accounts;
 
     shared_qobject_ptr<HttpMetaCache> m_metacache;
@@ -303,8 +309,7 @@ public:
     QString m_serverToJoin;
     QString m_profileToUse;
     bool m_liveCheck = false;
-    QUrl m_zipToImport;
+    QList<QUrl> m_zipsToImport;
     QString m_instanceIdToShowWindowOf;
     std::unique_ptr<QFile> logFile;
 };
-

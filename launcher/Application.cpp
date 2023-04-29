@@ -7,6 +7,7 @@
  *  Copyright (C) 2022 Sefa Eyeoglu <contact@scrumplex.net>
  *  Copyright (C) 2022 Lenny McLennington <lenny@sneed.church>
  *  Copyright (C) 2022 Tayou <tayou@gmx.net>
+ *  Copyright (C) 2023 TheKodeToad <TheKodeToad@proton.me>
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -62,15 +63,11 @@
 #include "ui/pages/global/APIPage.h"
 #include "ui/pages/global/CustomCommandsPage.h"
 
-#ifdef Q_OS_WIN
-#include "ui/WinDarkmode.h"
-#include <versionhelpers.h>
-#endif
-
 #include "ui/setupwizard/SetupWizard.h"
 #include "ui/setupwizard/LanguageWizardPage.h"
 #include "ui/setupwizard/JavaWizardPage.h"
 #include "ui/setupwizard/PasteWizardPage.h"
+#include "ui/setupwizard/ThemeWizardPage.h"
 
 #include "ui/dialogs/CustomMessageBox.h"
 
@@ -81,7 +78,9 @@
 #include "ApplicationMessage.h"
 
 #include <iostream>
+#include <mutex>
 
+#include <QFileOpenEvent>
 #include <QAccessible>
 #include <QCommandLineParser>
 #include <QDir>
@@ -97,6 +96,7 @@
 #include <QIcon>
 
 #include "InstanceList.h"
+#include "MTPixmapCache.h"
 
 #include <minecraft/auth/AccountList.h>
 #include "icons/IconList.h"
@@ -104,7 +104,7 @@
 
 #include "java/JavaUtils.h"
 
-#include "updater/UpdateChecker.h"
+#include "updater/ExternalUpdater.h"
 
 #include "tools/JProfiler.h"
 #include "tools/JVisualVM.h"
@@ -125,6 +125,11 @@
 #ifdef Q_OS_LINUX
 #include <dlfcn.h>
 #include "gamemode_client.h"
+#include "MangoHud.h"
+#endif
+
+#ifdef Q_OS_MAC
+#include "updater/MacSparkleUpdater.h"
 #endif
 
 
@@ -141,64 +146,23 @@
 
 static const QLatin1String liveCheckFile("live.check");
 
+PixmapCache* PixmapCache::s_instance = nullptr;
+
 namespace {
+
+/** This is used so that we can output to the log file in addition to the CLI. */
 void appDebugOutput(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
-    const char *levels = "DWCFIS";
-    const QString format("%1 %2 %3\n");
+    static std::mutex loggerMutex;
+    const std::lock_guard<std::mutex> lock(loggerMutex); // synchronized, QFile logFile is not thread-safe
 
-    qint64 msecstotal = APPLICATION->timeSinceStart();
-    qint64 seconds = msecstotal / 1000;
-    qint64 msecs = msecstotal % 1000;
-    QString foo;
-    char buf[1025] = {0};
-    ::snprintf(buf, 1024, "%5lld.%03lld", seconds, msecs);
-
-    QString out = format.arg(buf).arg(levels[type]).arg(msg);
+    QString out = qFormatLogMessage(type, context, msg);
+    out += QChar::LineFeed;
 
     APPLICATION->logFile->write(out.toUtf8());
     APPLICATION->logFile->flush();
     QTextStream(stderr) << out.toLocal8Bit();
     fflush(stderr);
-}
-
-QString getIdealPlatform(QString currentPlatform) {
-    auto info = Sys::getKernelInfo();
-    switch(info.kernelType) {
-        case Sys::KernelType::Darwin: {
-            if(info.kernelMajor >= 17) {
-                // macOS 10.13 or newer
-                return "osx64-5.15.2";
-            }
-            else {
-                // macOS 10.12 or older
-                return "osx64";
-            }
-        }
-        case Sys::KernelType::Windows: {
-            // FIXME: 5.15.2 is not stable on Windows, due to a large number of completely unpredictable and hard to reproduce issues
-            break;
-/*
-            if(info.kernelMajor == 6 && info.kernelMinor >= 1) {
-                // Windows 7
-                return "win32-5.15.2";
-            }
-            else if (info.kernelMajor > 6) {
-                // Above Windows 7
-                return "win32-5.15.2";
-            }
-            else {
-                // Below Windows 7
-                return "win32";
-            }
-*/
-        }
-        case Sys::KernelType::Undetermined:
-        case Sys::KernelType::Linux: {
-            break;
-        }
-    }
-    return currentPlatform;
 }
 
 }
@@ -262,8 +226,18 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
     m_serverToJoin = parser.value("server");
     m_profileToUse = parser.value("profile");
     m_liveCheck = parser.isSet("alive");
-    m_zipToImport = parser.value("import");
+
     m_instanceIdToShowWindowOf = parser.value("show");
+
+    for (auto zip_path : parser.values("import")){
+        m_zipsToImport.append(QUrl::fromLocalFile(QFileInfo(zip_path).absoluteFilePath()));
+    }
+
+    // treat unspecified positional arguments as import urls
+    for (auto zip_path : parser.positionalArguments()) {
+        m_zipsToImport.append(QUrl::fromLocalFile(QFileInfo(zip_path).absoluteFilePath()));
+    }
+
 
     // error if --launch is missing with --server or --profile
     if((!m_serverToJoin.isEmpty() || !m_profileToUse.isEmpty()) && m_instanceIdToLaunch.isEmpty())
@@ -348,7 +322,7 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
     }
 
     /*
-     * Establish the mechanism for communication with an already running PolyMC that uses the same data path.
+     * Establish the mechanism for communication with an already running PrismLauncher that uses the same data path.
      * If there is one, tell it what the user actually wanted to do and exit.
      * We want to initialize this before logging to avoid messing with the log of a potential already running copy.
      */
@@ -366,12 +340,14 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
                 activate.command = "activate";
                 m_peerInstance->sendMessage(activate.serialize(), timeout);
 
-                if(!m_zipToImport.isEmpty())
+                if(!m_zipsToImport.isEmpty())
                 {
-                    ApplicationMessage import;
-                    import.command = "import";
-                    import.args.insert("path", m_zipToImport.toString());
-                    m_peerInstance->sendMessage(import.serialize(), timeout);
+                    for (auto zip_url : m_zipsToImport) {
+                        ApplicationMessage import;
+                        import.command = "import";
+                        import.args.insert("path", zip_url.toString());
+                        m_peerInstance->sendMessage(import.serialize(), timeout);
+                    }
                 }
             }
             else
@@ -427,6 +403,14 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
             return;
         }
         qInstallMessageHandler(appDebugOutput);
+
+        qSetMessagePattern(
+                "%{time process}" " "
+                "%{if-debug}D%{endif}" "%{if-info}I%{endif}" "%{if-warning}W%{endif}" "%{if-critical}C%{endif}" "%{if-fatal}F%{endif}"
+                " " "|" " "
+                "%{if-category}[%{category}]: %{endif}"
+                "%{message}");
+
         qDebug() << "<> Log initialized.";
     }
 
@@ -490,14 +474,10 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
     {
         // Provide a fallback for migration from PolyMC
         m_settings.reset(new INISettingsObject({ BuildConfig.LAUNCHER_CONFIGFILE, "polymc.cfg", "multimc.cfg" }, this));
-        // Updates
-        // Multiple channels are separated by spaces
-        m_settings->registerSetting("UpdateChannel", BuildConfig.VERSION_CHANNEL);
-        m_settings->registerSetting("AutoUpdate", true);
 
         // Theming
         m_settings->registerSetting("IconTheme", QString("pe_colored"));
-        m_settings->registerSetting("ApplicationTheme", QString("system"));
+        m_settings->registerSetting("ApplicationTheme", QString());
         m_settings->registerSetting("BackgroundCat", QString("kitteh"));
 
         // Remembered state
@@ -536,6 +516,8 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
         m_settings->registerSetting("InstanceDir", "instances");
         m_settings->registerSetting({"CentralModsDir", "ModsDir"}, "mods");
         m_settings->registerSetting("IconsDir", "icons");
+        m_settings->registerSetting("DownloadsDir", QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
+        m_settings->registerSetting("DownloadsDirWatchRecursive", false);
 
         // Editors
         m_settings->registerSetting("JsonEditor", QString());
@@ -632,6 +614,9 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
         m_settings->registerSetting("UpdateDialogGeometry", "");
 
         m_settings->registerSetting("ModDownloadGeometry", "");
+        m_settings->registerSetting("RPDownloadGeometry", "");
+        m_settings->registerSetting("TPDownloadGeometry", "");
+        m_settings->registerSetting("ShaderDownloadGeometry", "");
 
         // HACK: This code feels so stupid is there a less stupid way of doing this?
         {
@@ -678,6 +663,7 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
                 m_settings->set("FlameKeyOverride", flameKey);
             m_settings->reset("CFKeyOverride");
         }
+        m_settings->registerSetting("ModrinthToken", "");
         m_settings->registerSetting("UserAgentOverride", "");
 
         // Init page provider
@@ -693,6 +679,9 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
             m_globalSettingsProvider->addPage<AccountListPage>();
             m_globalSettingsProvider->addPage<APIPage>();
         }
+
+        PixmapCache::setInstance(new PixmapCache(this));
+
         qDebug() << "<> Settings loaded.";
     }
 
@@ -702,7 +691,7 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
 
     // initialize network access and proxy setup
     {
-        m_network = new QNetworkAccessManager();
+        m_network.reset(new QNetworkAccessManager());
         QString proxyTypeStr = settings()->get("ProxyType").toString();
         QString addr = settings()->get("ProxyAddr").toString();
         int port = settings()->get("ProxyPort").value<qint16>();
@@ -724,10 +713,10 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
     // initialize the updater
     if(BuildConfig.UPDATER_ENABLED)
     {
-        auto platform = getIdealPlatform(BuildConfig.BUILD_PLATFORM);
-        auto channelUrl = BuildConfig.UPDATER_BASE + platform + "/channels.json";
-        qDebug() << "Initializing updater with platform: " << platform << " -- " << channelUrl;
-        m_updateChecker.reset(new UpdateChecker(m_network, channelUrl, BuildConfig.VERSION_CHANNEL));
+        qDebug() << "Initializing updater";
+#ifdef Q_OS_MAC
+        m_updater.reset(new MacSparkleUpdater());
+#endif
         qDebug() << "<> Updater started.";
     }
 
@@ -842,12 +831,7 @@ Application::Application(int &argc, char **argv) : QApplication(argc, argv)
         }
     });
 
-    {
-        setIconTheme(settings()->get("IconTheme").toString());
-        qDebug() << "<> Icon theme set.";
-        setApplicationTheme(settings()->get("ApplicationTheme").toString(), true);
-        qDebug() << "<> Application theme set.";
-    }
+    applyCurrentlySelectedTheme(true);
 
     updateCapabilities();
 
@@ -889,7 +873,8 @@ bool Application::createSetupWizard()
         return false;
     }();
     bool pasteInterventionRequired = settings()->get("PastebinURL") != "";
-    bool wizardRequired = javaRequired || languageRequired || pasteInterventionRequired;
+    bool themeInterventionRequired = settings()->get("ApplicationTheme") == "";
+    bool wizardRequired = javaRequired || languageRequired || pasteInterventionRequired || themeInterventionRequired;
 
     if(wizardRequired)
     {
@@ -907,6 +892,12 @@ bool Application::createSetupWizard()
         if (pasteInterventionRequired)
         {
             m_setupWizard->addPage(new PasteWizardPage(m_setupWizard));
+        }
+
+        if (themeInterventionRequired)
+        {
+            settings()->set("ApplicationTheme", QString("system")); // set default theme after going into theme wizard
+            m_setupWizard->addPage(new ThemeWizardPage(m_setupWizard));
         }
         connect(m_setupWizard, &QDialog::finished, this, &Application::setupWizardFinished);
         m_setupWizard->show();
@@ -930,7 +921,7 @@ bool Application::event(QEvent* event)
 
     if (event->type() == QEvent::FileOpen) {
         auto ev = static_cast<QFileOpenEvent*>(event);
-        m_mainWindow->droppedURLs({ ev->url() });
+        m_mainWindow->processURLs({ ev->url() });
     }
 
     return QApplication::event(event);
@@ -990,10 +981,10 @@ void Application::performMainStartupAction()
         showMainWindow(false);
         qDebug() << "<> Main window shown.";
     }
-    if(!m_zipToImport.isEmpty())
+    if(!m_zipsToImport.isEmpty())
     {
-        qDebug() << "<> Importing instance from zip:" << m_zipToImport;
-        m_mainWindow->droppedURLs({ m_zipToImport });
+        qDebug() << "<> Importing from zip:" << m_zipsToImport;
+        m_mainWindow->processURLs( m_zipsToImport );
     }
 }
 
@@ -1046,7 +1037,7 @@ void Application::messageReceived(const QByteArray& message)
             qWarning() << "Received" << command << "message without a zip path/URL.";
             return;
         }
-        m_mainWindow->droppedURLs({ QUrl(path) });
+        m_mainWindow->processURLs({ QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()) });
     }
     else if(command == "launch")
     {
@@ -1115,9 +1106,14 @@ QList<ITheme*> Application::getValidApplicationThemes()
     return m_themeManager->getValidApplicationThemes();
 }
 
-void Application::setApplicationTheme(const QString& name, bool initial)
+void Application::applyCurrentlySelectedTheme(bool initial)
 {
-    m_themeManager->setApplicationTheme(name, initial);
+    m_themeManager->applyCurrentlySelectedTheme(initial);
+}
+
+void Application::setApplicationTheme(const QString& name)
+{
+    m_themeManager->setApplicationTheme(name);
 }
 
 void Application::setIconTheme(const QString& name)
@@ -1345,16 +1341,7 @@ MainWindow* Application::showMainWindow(bool minimized)
         m_mainWindow = new MainWindow();
         m_mainWindow->restoreState(QByteArray::fromBase64(APPLICATION->settings()->get("MainWindowState").toByteArray()));
         m_mainWindow->restoreGeometry(QByteArray::fromBase64(APPLICATION->settings()->get("MainWindowGeometry").toByteArray()));
-#ifdef Q_OS_WIN
-        if (IsWindows10OrGreater())
-        {
-            if (QString::compare(settings()->get("ApplicationTheme").toString(), "dark") == 0) {
-                WinDarkmode::setDarkWinTitlebar(m_mainWindow->winId(), true);
-            } else {
-                WinDarkmode::setDarkWinTitlebar(m_mainWindow->winId(), false);
-            }
-        }
-#endif
+
         if(minimized)
         {
             m_mainWindow->showMinimized();
@@ -1519,17 +1506,8 @@ void Application::updateCapabilities()
     if (gamemode_query_status() >= 0)
         m_capabilities |= SupportsGameMode;
 
-    {
-        void *dummy = dlopen("libMangoHud_dlsym.so", RTLD_LAZY);
-        // try normal variant as well
-        if (dummy == NULL)
-            dummy = dlopen("libMangoHud.so", RTLD_LAZY);
-
-        if (dummy != NULL) {
-            dlclose(dummy);
-            m_capabilities |= SupportsMangoHud;
-        }
-    }
+    if (!MangoHud::getLibraryString().isEmpty())
+        m_capabilities |= SupportsMangoHud;
 #endif
 }
 
@@ -1540,7 +1518,8 @@ QString Application::getJarPath(QString jarFile)
         FS::PathCombine(m_rootPath, "share/" + BuildConfig.LAUNCHER_APP_BINARY_NAME),
 #endif
         FS::PathCombine(m_rootPath, "jars"),
-        FS::PathCombine(applicationDirPath(), "jars")
+        FS::PathCombine(applicationDirPath(), "jars"),
+        FS::PathCombine(applicationDirPath(), "..", "jars") // from inside build dir, for debuging
     };
     for(QString p : potentialPaths)
     {
@@ -1569,6 +1548,15 @@ QString Application::getFlameAPIKey()
     }
 
     return BuildConfig.FLAME_API_KEY;
+}
+
+QString Application::getModrinthAPIToken()
+{
+    QString tokenOverride = m_settings->get("ModrinthToken").toString();
+    if (!tokenOverride.isEmpty())
+        return tokenOverride;
+
+    return QString();
 }
 
 QString Application::getUserAgent()
@@ -1689,4 +1677,15 @@ bool Application::handleDataMigration(const QString& currentData,
         qWarning() << "<> Migration was skipped, due to existing data";
     }
     return true;
+}
+
+void Application::triggerUpdateCheck()
+{
+    if (m_updater) {
+        qDebug() << "Checking for updates.";
+        m_updater->setBetaAllowed(false);  // There are no other channels than stable
+        m_updater->checkForUpdates();
+    } else {
+        qDebug() << "Updater not available.";
+    }
 }

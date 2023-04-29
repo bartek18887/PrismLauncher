@@ -38,9 +38,9 @@ set(CORE_SOURCES
     InstanceImportTask.h
     InstanceImportTask.cpp
 
-    # Mod downloading task
-    ModDownloadTask.h
-    ModDownloadTask.cpp
+    # Resource downloading task
+    ResourceDownloadTask.h
+    ResourceDownloadTask.cpp
 
     # Use tracking separate from memory management
     Usable.h
@@ -89,7 +89,18 @@ set(CORE_SOURCES
     # Time
     MMCTime.h
     MMCTime.cpp
+
+    MTPixmapCache.h
 )
+if (UNIX AND NOT CYGWIN AND NOT APPLE)
+set(CORE_SOURCES
+    ${CORE_SOURCES}
+
+    # MangoHud
+    MangoHud.h
+    MangoHud.cpp
+    )
+endif()
 
 set(PATHMATCHER_SOURCES
     # Path matchers
@@ -150,12 +161,6 @@ set(LAUNCH_SOURCES
 
 # Old update system
 set(UPDATE_SOURCES
-    updater/GoUpdate.h
-    updater/GoUpdate.cpp
-    updater/UpdateChecker.h
-    updater/UpdateChecker.cpp
-    updater/DownloadTask.h
-    updater/DownloadTask.cpp
     updater/ExternalUpdater.h
 )
 
@@ -320,12 +325,18 @@ set(MINECRAFT_SOURCES
     minecraft/mod/Resource.cpp
     minecraft/mod/ResourceFolderModel.h
     minecraft/mod/ResourceFolderModel.cpp
+    minecraft/mod/DataPack.h
+    minecraft/mod/DataPack.cpp
     minecraft/mod/ResourcePack.h
     minecraft/mod/ResourcePack.cpp
     minecraft/mod/ResourcePackFolderModel.h
     minecraft/mod/ResourcePackFolderModel.cpp
     minecraft/mod/TexturePack.h
     minecraft/mod/TexturePack.cpp
+    minecraft/mod/ShaderPack.h
+    minecraft/mod/ShaderPack.cpp
+    minecraft/mod/WorldSave.h
+    minecraft/mod/WorldSave.cpp
     minecraft/mod/TexturePackFolderModel.h
     minecraft/mod/TexturePackFolderModel.cpp
     minecraft/mod/ShaderPackFolderModel.h
@@ -336,10 +347,18 @@ set(MINECRAFT_SOURCES
     minecraft/mod/tasks/LocalModParseTask.cpp
     minecraft/mod/tasks/LocalModUpdateTask.h
     minecraft/mod/tasks/LocalModUpdateTask.cpp
+    minecraft/mod/tasks/LocalDataPackParseTask.h
+    minecraft/mod/tasks/LocalDataPackParseTask.cpp
     minecraft/mod/tasks/LocalResourcePackParseTask.h
     minecraft/mod/tasks/LocalResourcePackParseTask.cpp
     minecraft/mod/tasks/LocalTexturePackParseTask.h
     minecraft/mod/tasks/LocalTexturePackParseTask.cpp
+    minecraft/mod/tasks/LocalShaderPackParseTask.h
+    minecraft/mod/tasks/LocalShaderPackParseTask.cpp
+    minecraft/mod/tasks/LocalWorldSaveParseTask.h
+    minecraft/mod/tasks/LocalWorldSaveParseTask.cpp
+    minecraft/mod/tasks/LocalResourceParse.h
+    minecraft/mod/tasks/LocalResourceParse.cpp
 
     # Assets
     minecraft/AssetsUtils.h
@@ -448,7 +467,7 @@ set(API_SOURCES
     modplatform/ModIndex.h
     modplatform/ModIndex.cpp
 
-    modplatform/ModAPI.h
+    modplatform/ResourceAPI.h
 
     modplatform/EnsureMetadataTask.h
     modplatform/EnsureMetadataTask.cpp
@@ -459,8 +478,8 @@ set(API_SOURCES
     modplatform/flame/FlameAPI.cpp
     modplatform/modrinth/ModrinthAPI.h
     modplatform/modrinth/ModrinthAPI.cpp
-    modplatform/helpers/NetworkModAPI.h
-    modplatform/helpers/NetworkModAPI.cpp
+    modplatform/helpers/NetworkResourceAPI.h
+    modplatform/helpers/NetworkResourceAPI.cpp
     modplatform/helpers/HashUtils.h
     modplatform/helpers/HashUtils.cpp
     modplatform/helpers/OverrideUtils.h
@@ -505,13 +524,6 @@ set(MODRINTH_SOURCES
     modplatform/modrinth/ModrinthInstanceCreationTask.h
 )
 
-set(MODPACKSCH_SOURCES
-    modplatform/modpacksch/FTBPackInstallTask.h
-    modplatform/modpacksch/FTBPackInstallTask.cpp
-    modplatform/modpacksch/FTBPackManifest.h
-    modplatform/modpacksch/FTBPackManifest.cpp
-)
-
 set(PACKWIZ_SOURCES
     modplatform/packwiz/Packwiz.h
     modplatform/packwiz/Packwiz.cpp
@@ -540,6 +552,24 @@ set(ATLAUNCHER_SOURCES
     modplatform/atlauncher/ATLShareCode.h
 )
 
+######## Logging categories ########
+
+ecm_qt_declare_logging_category(CORE_SOURCES
+    HEADER Logging.h
+    IDENTIFIER authCredentials
+    CATEGORY_NAME "launcher.auth.credentials"
+    DEFAULT_SEVERITY Warning
+    DESCRIPTION "Secrets and credentials for debugging purposes"
+    EXPORT "${Launcher_Name}"
+)
+
+if(KDE_INSTALL_LOGGINGCATEGORIESDIR)  # only install if there is a standard path for this
+    ecm_qt_install_logging_categories(
+        EXPORT "${Launcher_Name}"
+        DESTINATION "${KDE_INSTALL_LOGGINGCATEGORIESDIR}"
+    )
+endif()
+
 ################################ COMPILE ################################
 
 set(LOGIC_SOURCES
@@ -562,7 +592,6 @@ set(LOGIC_SOURCES
     ${FTB_SOURCES}
     ${FLAME_SOURCES}
     ${MODRINTH_SOURCES}
-    ${MODPACKSCH_SOURCES}
     ${PACKWIZ_SOURCES}
     ${TECHNIC_SOURCES}
     ${ATLAUNCHER_SOURCES}
@@ -578,8 +607,6 @@ SET(LAUNCHER_SOURCES
     Application.cpp
     DataMigrationTask.h
     DataMigrationTask.cpp
-    UpdateController.cpp
-    UpdateController.h
     ApplicationMessage.h
     ApplicationMessage.cpp
 
@@ -588,7 +615,7 @@ SET(LAUNCHER_SOURCES
     DesktopServices.cpp
     VersionProxyModel.h
     VersionProxyModel.cpp
-    HoeDown.h
+    Markdown.h
 
     # Super secret!
     KonamiCode.h
@@ -640,6 +667,8 @@ SET(LAUNCHER_SOURCES
     ui/setupwizard/LanguageWizardPage.h
     ui/setupwizard/PasteWizardPage.cpp
     ui/setupwizard/PasteWizardPage.h
+    ui/setupwizard/ThemeWizardPage.cpp
+    ui/setupwizard/ThemeWizardPage.h
 
     # GUI - themes
     ui/themes/FusionTheme.cpp
@@ -680,9 +709,14 @@ SET(LAUNCHER_SOURCES
     ui/pages/instance/GameOptionsPage.h
     ui/pages/instance/VersionPage.cpp
     ui/pages/instance/VersionPage.h
+    ui/pages/instance/ManagedPackPage.cpp
+    ui/pages/instance/ManagedPackPage.h
     ui/pages/instance/TexturePackPage.h
+    ui/pages/instance/TexturePackPage.cpp
     ui/pages/instance/ResourcePackPage.h
+    ui/pages/instance/ResourcePackPage.cpp
     ui/pages/instance/ShaderPackPage.h
+    ui/pages/instance/ShaderPackPage.cpp
     ui/pages/instance/ModFolderPage.cpp
     ui/pages/instance/ModFolderPage.h
     ui/pages/instance/NotesPage.cpp
@@ -724,10 +758,25 @@ SET(LAUNCHER_SOURCES
     ui/pages/modplatform/VanillaPage.cpp
     ui/pages/modplatform/VanillaPage.h
 
+    ui/pages/modplatform/ResourcePage.cpp
+    ui/pages/modplatform/ResourcePage.h
+    ui/pages/modplatform/ResourceModel.cpp
+    ui/pages/modplatform/ResourceModel.h
+
     ui/pages/modplatform/ModPage.cpp
     ui/pages/modplatform/ModPage.h
     ui/pages/modplatform/ModModel.cpp
     ui/pages/modplatform/ModModel.h
+
+    ui/pages/modplatform/ResourcePackPage.cpp
+    ui/pages/modplatform/ResourcePackModel.cpp
+
+    # Needed for MOC to find them without a corresponding .cpp
+    ui/pages/modplatform/TexturePackPage.h
+    ui/pages/modplatform/TexturePackModel.cpp
+
+    ui/pages/modplatform/ShaderPackPage.cpp
+    ui/pages/modplatform/ShaderPackModel.cpp
 
     ui/pages/modplatform/atlauncher/AtlFilterModel.cpp
     ui/pages/modplatform/atlauncher/AtlFilterModel.h
@@ -740,13 +789,6 @@ SET(LAUNCHER_SOURCES
     ui/pages/modplatform/atlauncher/AtlUserInteractionSupportImpl.cpp
     ui/pages/modplatform/atlauncher/AtlUserInteractionSupportImpl.h
 
-    ui/pages/modplatform/ftb/FtbFilterModel.cpp
-    ui/pages/modplatform/ftb/FtbFilterModel.h
-    ui/pages/modplatform/ftb/FtbListModel.cpp
-    ui/pages/modplatform/ftb/FtbListModel.h
-    ui/pages/modplatform/ftb/FtbPage.cpp
-    ui/pages/modplatform/ftb/FtbPage.h
-
     ui/pages/modplatform/legacy_ftb/Page.cpp
     ui/pages/modplatform/legacy_ftb/Page.h
     ui/pages/modplatform/legacy_ftb/ListModel.h
@@ -756,10 +798,10 @@ SET(LAUNCHER_SOURCES
     ui/pages/modplatform/flame/FlameModel.h
     ui/pages/modplatform/flame/FlamePage.cpp
     ui/pages/modplatform/flame/FlamePage.h
-    ui/pages/modplatform/flame/FlameModModel.cpp
-    ui/pages/modplatform/flame/FlameModModel.h
-    ui/pages/modplatform/flame/FlameModPage.cpp
-    ui/pages/modplatform/flame/FlameModPage.h
+    ui/pages/modplatform/flame/FlameResourceModels.cpp
+    ui/pages/modplatform/flame/FlameResourceModels.h
+    ui/pages/modplatform/flame/FlameResourcePages.cpp
+    ui/pages/modplatform/flame/FlameResourcePages.h
 
     ui/pages/modplatform/modrinth/ModrinthPage.cpp
     ui/pages/modplatform/modrinth/ModrinthPage.h
@@ -774,10 +816,10 @@ SET(LAUNCHER_SOURCES
     ui/pages/modplatform/ImportPage.cpp
     ui/pages/modplatform/ImportPage.h
 
-    ui/pages/modplatform/modrinth/ModrinthModModel.cpp
-    ui/pages/modplatform/modrinth/ModrinthModModel.h
-    ui/pages/modplatform/modrinth/ModrinthModPage.cpp
-    ui/pages/modplatform/modrinth/ModrinthModPage.h
+    ui/pages/modplatform/modrinth/ModrinthResourceModels.cpp
+    ui/pages/modplatform/modrinth/ModrinthResourceModels.h
+    ui/pages/modplatform/modrinth/ModrinthResourcePages.cpp
+    ui/pages/modplatform/modrinth/ModrinthResourcePages.h
 
     # GUI - dialogs
     ui/dialogs/AboutDialog.cpp
@@ -796,8 +838,8 @@ SET(LAUNCHER_SOURCES
     ui/dialogs/ExportInstanceDialog.h
     ui/dialogs/IconPickerDialog.cpp
     ui/dialogs/IconPickerDialog.h
-    ui/dialogs/ImportResourcePackDialog.cpp
-    ui/dialogs/ImportResourcePackDialog.h
+    ui/dialogs/ImportResourceDialog.cpp
+    ui/dialogs/ImportResourceDialog.h
     ui/dialogs/LoginDialog.cpp
     ui/dialogs/LoginDialog.h
     ui/dialogs/MSALoginDialog.cpp
@@ -816,14 +858,12 @@ SET(LAUNCHER_SOURCES
     ui/dialogs/ProgressDialog.h
     ui/dialogs/ReviewMessageBox.cpp
     ui/dialogs/ReviewMessageBox.h
-    ui/dialogs/UpdateDialog.cpp
-    ui/dialogs/UpdateDialog.h
     ui/dialogs/VersionSelectDialog.cpp
     ui/dialogs/VersionSelectDialog.h
     ui/dialogs/SkinUploadDialog.cpp
     ui/dialogs/SkinUploadDialog.h
-    ui/dialogs/ModDownloadDialog.cpp
-    ui/dialogs/ModDownloadDialog.h
+    ui/dialogs/ResourceDownloadDialog.cpp
+    ui/dialogs/ResourceDownloadDialog.h
     ui/dialogs/ScrollMessageBox.cpp
     ui/dialogs/ScrollMessageBox.h
     ui/dialogs/BlockedModsDialog.cpp
@@ -877,6 +917,8 @@ SET(LAUNCHER_SOURCES
     ui/widgets/ProgressWidget.cpp
     ui/widgets/WideBar.h
     ui/widgets/WideBar.cpp
+    ui/widgets/ThemeCustomizationWidget.h
+    ui/widgets/ThemeCustomizationWidget.cpp
 
     # GUI - instance group view
     ui/instanceview/InstanceProxyModel.cpp
@@ -892,18 +934,10 @@ SET(LAUNCHER_SOURCES
     ui/instanceview/VisualGroup.h
 )
 
-if(WIN32)
-    set(LAUNCHER_SOURCES
-        ${LAUNCHER_SOURCES}
-
-        # GUI - dark titlebar for Windows 10/11
-        ui/WinDarkmode.h
-        ui/WinDarkmode.cpp
-    )
-endif()
-
 qt_wrap_ui(LAUNCHER_UI
+    ui/MainWindow.ui
     ui/setupwizard/PasteWizardPage.ui
+    ui/setupwizard/ThemeWizardPage.ui
     ui/pages/global/AccountListPage.ui
     ui/pages/global/JavaPage.ui
     ui/pages/global/LauncherPage.ui
@@ -919,34 +953,34 @@ qt_wrap_ui(LAUNCHER_UI
     ui/pages/instance/OtherLogsPage.ui
     ui/pages/instance/InstanceSettingsPage.ui
     ui/pages/instance/VersionPage.ui
+    ui/pages/instance/ManagedPackPage.ui
     ui/pages/instance/WorldListPage.ui
     ui/pages/instance/ScreenshotsPage.ui
     ui/pages/modplatform/atlauncher/AtlOptionalModDialog.ui
     ui/pages/modplatform/atlauncher/AtlPage.ui
     ui/pages/modplatform/VanillaPage.ui
-    ui/pages/modplatform/ModPage.ui
+    ui/pages/modplatform/ResourcePage.ui
     ui/pages/modplatform/flame/FlamePage.ui
     ui/pages/modplatform/legacy_ftb/Page.ui
     ui/pages/modplatform/ImportPage.ui
-    ui/pages/modplatform/ftb/FtbPage.ui
     ui/pages/modplatform/modrinth/ModrinthPage.ui
     ui/pages/modplatform/technic/TechnicPage.ui
     ui/widgets/InstanceCardWidget.ui
     ui/widgets/CustomCommands.ui
     ui/widgets/InfoFrame.ui
     ui/widgets/ModFilterWidget.ui
+    ui/widgets/ThemeCustomizationWidget.ui
     ui/dialogs/CopyInstanceDialog.ui
     ui/dialogs/ProfileSetupDialog.ui
     ui/dialogs/ProgressDialog.ui
     ui/dialogs/NewInstanceDialog.ui
-    ui/dialogs/UpdateDialog.ui
     ui/dialogs/NewComponentDialog.ui
     ui/dialogs/NewsDialog.ui
     ui/dialogs/ProfileSelectDialog.ui
     ui/dialogs/SkinUploadDialog.ui
     ui/dialogs/ExportInstanceDialog.ui
     ui/dialogs/IconPickerDialog.ui
-    ui/dialogs/ImportResourcePackDialog.ui
+    ui/dialogs/ImportResourceDialog.ui
     ui/dialogs/MSALoginDialog.ui
     ui/dialogs/OfflineLoginDialog.ui
     ui/dialogs/AboutDialog.ui
@@ -988,6 +1022,7 @@ target_link_libraries(Launcher_logic
     nbt++
     ${ZLIB_LIBRARIES}
     tomlplusplus::tomlplusplus
+    qdcss
     BuildConfig
     Katabasis
     Qt${QT_VERSION_MAJOR}::Widgets
@@ -1011,7 +1046,7 @@ target_link_libraries(Launcher_logic
 )
 target_link_libraries(Launcher_logic
     QuaZip::QuaZip
-    hoedown
+    cmark::cmark
     LocalPeer
     Launcher_rainbow
 )
@@ -1152,6 +1187,8 @@ if(INSTALL_BUNDLE STREQUAL "full")
             CONFIGURATIONS Debug RelWithDebInfo ""
             DESTINATION ${PLUGIN_DEST_DIR}
             COMPONENT Runtime
+            PATTERN "*qopensslbackend*" EXCLUDE
+            PATTERN "*qcertonlybackend*" EXCLUDE
         )
         install(
             DIRECTORY "${QT_PLUGINS_DIR}/tls"
@@ -1161,6 +1198,8 @@ if(INSTALL_BUNDLE STREQUAL "full")
             REGEX "dd\\." EXCLUDE
             REGEX "_debug\\." EXCLUDE
             REGEX "\\.dSYM" EXCLUDE
+            PATTERN "*qopensslbackend*" EXCLUDE
+            PATTERN "*qcertonlybackend*" EXCLUDE
         )
     endif()
     configure_file(

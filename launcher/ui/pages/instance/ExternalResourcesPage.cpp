@@ -1,4 +1,5 @@
 #include "ExternalResourcesPage.h"
+#include "ui/dialogs/CustomMessageBox.h"
 #include "ui_ExternalResourcesPage.h"
 
 #include "DesktopServices.h"
@@ -67,11 +68,21 @@ void ExternalResourcesPage::ShowContextMenu(const QPoint& pos)
 void ExternalResourcesPage::openedImpl()
 {
     m_model->startWatching();
+
+    auto const setting_name = QString("WideBarVisibility_%1").arg(id());
+    if (!APPLICATION->settings()->contains(setting_name))
+        m_wide_bar_setting = APPLICATION->settings()->registerSetting(setting_name);
+    else
+        m_wide_bar_setting = APPLICATION->settings()->getSetting(setting_name);
+
+    ui->actionsToolbar->setVisibilityState(m_wide_bar_setting->get().toByteArray());
 }
 
 void ExternalResourcesPage::closedImpl()
 {
     m_model->stopWatching();
+
+    m_wide_bar_setting->set(ui->actionsToolbar->getVisibilityState());
 }
 
 void ExternalResourcesPage::retranslate()
@@ -118,7 +129,7 @@ bool ExternalResourcesPage::eventFilter(QObject* obj, QEvent* ev)
 {
     if (ev->type() != QEvent::KeyPress)
         return QWidget::eventFilter(obj, ev);
-    
+
     QKeyEvent* keyEvent = static_cast<QKeyEvent*>(ev);
     if (obj == ui->treeView)
         return listFilter(keyEvent);
@@ -130,7 +141,6 @@ void ExternalResourcesPage::addItem()
 {
     if (!m_controlsEnabled)
         return;
-    
 
     auto list = GuiUtil::BrowseForFiles(
         helpPage(), tr("Select %1", "Select whatever type of files the page contains. Example: 'Loader Mods'").arg(displayName()),
@@ -147,8 +157,50 @@ void ExternalResourcesPage::removeItem()
 {
     if (!m_controlsEnabled)
         return;
-    
+
     auto selection = m_filterModel->mapSelectionToSource(ui->treeView->selectionModel()->selection());
+
+    int count = 0;
+    bool folder = false;
+    for (auto& i : selection.indexes()) {
+        if (i.column() == 0) {
+            count++;
+
+            // if a folder is selected, show the confirmation dialog
+            if (m_model->at(i.row()).fileinfo().isDir())
+                folder = true;
+        }
+    }
+
+    QString text;
+    bool multiple = count > 1;
+
+    if (multiple) {
+        text = tr("You are about to remove %1 items.\n"
+                  "This may be permanent and they will be gone from the folder.\n\n"
+                  "Are you sure?")
+                   .arg(count);
+    } else if (folder) {
+        text = tr("You are about to remove the folder \"%1\".\n"
+                  "This may be permanent and it will be gone from the parent folder.\n\n"
+                  "Are you sure?")
+                   .arg(m_model->at(selection.indexes().at(0).row()).fileinfo().fileName());
+    }
+
+    if (!text.isEmpty()) {
+        auto response = CustomMessageBox::selectable(this, tr("Confirm Removal"), text, QMessageBox::Warning,
+                                                     QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+                            ->exec();
+
+        if (response != QMessageBox::Yes)
+            return;
+    }
+
+    removeItems(selection);
+}
+
+void ExternalResourcesPage::removeItems(const QItemSelection& selection)
+{
     m_model->deleteResources(selection.indexes());
 }
 
@@ -199,4 +251,3 @@ bool ExternalResourcesPage::onSelectionChanged(const QModelIndex& current, const
 
     return true;
 }
-
